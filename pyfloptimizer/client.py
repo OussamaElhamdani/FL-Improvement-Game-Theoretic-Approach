@@ -1,24 +1,32 @@
-import flwr as fl
+import numpy as np
 
-class GameOfGradientsClient(fl.client.NumPyClient):
-    def __init__(self, model, train_data, val_data):
+class Client:
+    def __init__(self, id, data, model, learning_rate):
+        self.id = id
+        self.data = data
         self.model = model
-        self.train_data = train_data
-        self.val_data = val_data
+        self.learning_rate = learning_rate
 
-    def get_parameters(self):
-        return self.model.get_weights()
+    def train(self, epochs, batch_size):
+        # Perform local training
+        for epoch in range(epochs):
+            batches = self._get_batches(batch_size)
+            for batch in batches:
+                gradients = self._compute_gradients(batch)
+                self.model.update_weights(gradients, self.learning_rate)
 
-    def fit(self, parameters, config):
-        self.model.set_weights(parameters)
-        self.model.fit(self.train_data[0], self.train_data[1], epochs=config["epochs"], batch_size=config["batch_size"])
-        sv = self.model.evaluate(self.val_data[0], self.val_data[1])[1]
-        return self.model.get_weights(), len(self.train_data[0]), {"sv": sv}
+    def _get_batches(self, batch_size):
+        # Split data into batches
+        np.random.shuffle(self.data)
+        return [self.data[i:i + batch_size] for i in range(0, len(self.data), batch_size)]
 
-    def evaluate(self, parameters, config):
-        self.model.set_weights(parameters)
-        loss, accuracy = self.model.evaluate(self.val_data[0], self.val_data[1])
-        return loss, len(self.val_data[0]), {"accuracy": accuracy}
+    def _compute_gradients(self, batch):
+        # Compute gradients for a batch
+        X, y = batch[:, :-1], batch[:, -1]
+        return self.model.compute_gradients(X, y)
 
-def get_client(model, train_data, val_data):
-    return GameOfGradientsClient(model, train_data, val_data)
+    def get_model(self):
+        return self.model
+
+    def get_gradients(self):
+        return self.model.get_gradients()

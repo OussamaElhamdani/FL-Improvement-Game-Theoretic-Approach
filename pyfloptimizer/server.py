@@ -1,48 +1,48 @@
-import numpy
-import flwr as fl
-from collections import defaultdict
+import numpy as np
+import random
 
-class GameOfGradientsServer(fl.server.strategy.FedAvg):
-    def __init__(self, alpha, beta, **kwargs):
-        super().__init__(**kwargs)
+class Server:
+    def __init__(self, global_model, clients, alpha=0.9, beta=0.1):
+        self.global_model = global_model
+        self.clients = clients
         self.alpha = alpha
-        self.beta = beta 
-        self.ϕ = defaultdict(lambda: 1.0) # Initialize importance scores
-        self.utilities = defaultdict(float)  # To track client utilities
+        self.beta = beta
+        self.phi = {client.id: 0 for client in clients}
+        self.gradients = {}
 
-    def initialize_parameters(self, client_manager):
-        """Initilize client-specific parameters if necessary."""
-        for cid in client_manager.all().keys():
-            self.φ[cid] = 1.0 # Initialize importance scores
+    def compute_shapley_values(self):
+        shapley_values = {}
+        for client_id, grads in self.gradients.items():
+            # Calculate Shapley value (example: norm of gradients)
+            shapley_values[client_id] = np.linalg.norm(grads)
+        return shapley_values
 
-    def configure_fit(self, rnd, parameters, client_manager):
-        """Initialize client-specific parameters if necessary."""
-        for cid in client_manager.all().keys():
-            self.ϕ[cid] = 1.0  # Initialize importance scores
+    def update_client_weights(self, shapley_values):
+        for client_id, sv in shapley_values.items():
+            self.phi[client_id] = self.alpha * self.phi[client_id] + self.beta * sv
 
-    def configure_fit(self, rnd, parameters, client_manager):
-        """Configure the next round of training."""
-        client_ids = self.sample_clients()
-        config = {"round": rnd, "epochs": 1, "batch_size": 32}
-        return [(client_id, parameters, config) for client_id in client_ids]
+    def select_clients(self, num_clients):
+        total_phi = sum(np.exp(self.phi[client_id]) for client_id in self.phi)
+        probabilities = [np.exp(self.phi[client_id]) / total_phi for client_id in self.phi]
+        selected_clients = random.choices(list(self.phi.keys()), weights=probabilities, k=num_clients)
+        return [client for client in self.clients if client.id in selected_clients]
 
-    def aggregate_fit(self, rnd, results, failures):
-        aggregated_weights, fit_metrics = super().aggregate_fit(rnd, results, failures)
-        if aggregated_weights is not None:
-            self.update_ϕ_and_utilities(results)
-        return aggregated_weights, fit_metrics
+    def aggregate_gradients(self):
+        # Aggregate gradients from selected clients
+        all_gradients = np.array([grads for grads in self.gradients.values()])
+        return np.mean(all_gradients, axis=0)
 
-    def update_ϕ_and_utilities(self, results):
-        for client_id, fit_res in results:
-            sv = fit_res.metrics["sv"]
-            self.utilities[client_id] += sv  # Update utility
-            self.ϕ[client_id] = self.alpha * self.ϕ[client_id] + self.beta * sv
+    def train(self, rounds, local_epochs, batch_size):
+        for t in range(rounds):
+            selected_clients = self.select_clients(len(self.clients) // 2)
+            self.gradients = {}
 
-    def sample_clients(self):
-        client_ids = list(self.ϕ.keys())
-        exp_ϕ = np.exp([self.ϕ[cid] for cid in client_ids])
-        P_ϕ = exp_ϕ / np.sum(exp_ϕ)
-        return np.random.choice(client_ids, size=min(len(client_ids), 10), p=P_ϕ)  # Sample 10 clients or all clients if fewer
+            for client in selected_clients:
+                client.train(local_epochs, batch_size)
+                self.gradients[client.id] = client.get_gradients()
 
-def get_server(alpha, beta):
-    return GameOfGradientsServer(alpha, beta)
+            shapley_values = self.compute_shapley_values()
+            self.update_client_weights(shapley_values)
+
+            aggregated_gradients = self.aggregate_gradients()
+            self.global_model.update_weights(aggregated_gradients)
